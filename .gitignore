@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.log
+coverage/
+backend/src/generated/
+# AI tool reference files
+backend/.agents/
+backend/.claude/
+backend/.windsurf/

@@ -1,0 +1,145 @@
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+enum UserRole {
+  REQUESTER
+  AREA_OWNER
+  SAFETY_OFFICER
+  ADMIN
+}
+
+enum PermitType {
+  HOT_WORK
+  CONFINED_SPACE
+  WORKING_AT_HEIGHT
+  ELECTRICAL_ISOLATION
+}
+
+enum PermitStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  ACTIVE
+  SUSPENDED
+  CLOSED
+  REJECTED
+  CANCELLED
+  EXPIRED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  name         String
+  email        String   @unique
+  password     String
+  role         UserRole
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  requestedPermits Permit[] @relation("PermitRequester")
+  approvals        Approval[] 
+  auditLogs        AuditLog[]
+}
+
+model Plant {
+  id        Int      @id @default(autoincrement())
+  name      String
+  location  String
+  createdAt DateTime @default(now())
+
+  equipment Equipment[]
+  permits   Permit[]
+}
+
+model Equipment {
+  id        Int      @id @default(autoincrement())
+  name      String
+  code      String   @unique
+  plantId   Int
+  createdAt DateTime @default(now())
+
+  plant   Plant    @relation(fields: [plantId], references: [id])
+  permits Permit[]
+}
+
+model Permit {
+  id             Int          @id @default(autoincrement())
+  permitNumber   String       @unique
+  title          String
+  description    String       @db.Text
+  type           PermitType
+  status         PermitStatus @default(DRAFT)
+
+  plannedStart   DateTime
+  plannedEnd     DateTime
+  actualStart    DateTime?
+  actualEnd      DateTime?
+
+  requesterId    Int
+  plantId        Int
+  equipmentId    Int?
+
+  // Shared safety information
+  workLocation   String
+  hazards        String       @db.Text
+  precautions    String       @db.Text
+  emergencyPlan  String       @db.Text
+
+  // Type-specific information
+  hotWorkDetails       Json?
+  confinedSpaceDetails Json?
+  heightWorkDetails    Json?
+  electricalDetails    Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  requester User      @relation("PermitRequester", fields: [requesterId], references: [id])
+  plant     Plant     @relation(fields: [plantId], references: [id])
+  equipment Equipment? @relation(fields: [equipmentId], references: [id])
+
+  approvals Approval[]
+  auditLogs AuditLog[]
+}
+
+model Approval {
+  id          Int            @id @default(autoincrement())
+  permitId    Int
+  approverId  Int
+  status      ApprovalStatus @default(PENDING)
+  comments    String?        @db.Text
+  approvedAt  DateTime?
+  createdAt   DateTime       @default(now())
+
+  permit   Permit @relation(fields: [permitId], references: [id])
+  approver User   @relation(fields: [approverId], references: [id])
+
+  @@unique([permitId, approverId])
+}
+
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  permitId   Int
+  userId     Int
+  action     String
+  oldStatus  String?
+  newStatus  String?
+  details    Json?
+  createdAt  DateTime @default(now())
+
+  permit Permit @relation(fields: [permitId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+}
