@@ -1,6 +1,6 @@
 
 import "dotenv/config";
-import { PrismaClient } from "../src/generated/prisma";
+import { PrismaClient, UserRole } from "../src/generated/prisma";
 import { PrismaMariaDb } from "@prisma/adapter-mariadb";
 import bcrypt from "bcrypt";
 
@@ -29,26 +29,26 @@ async function main() {
 
   const hashedPassword = await bcrypt.hash("PTW@Demo2026", 12);
 
-  const users = [
+ const users = [
   {
     name: "Demo Requester",
     email: "requester@opmaint.com",
-    role: "REQUESTER",
+    role: UserRole.REQUESTER,
   },
   {
     name: "Demo Area Owner",
     email: "areaowner@opmaint.com",
-    role: "AREA_OWNER",
+    role: UserRole.AREA_OWNER,
   },
   {
     name: "Demo Safety Officer",
     email: "safety@opmaint.com",
-    role: "SAFETY_OFFICER",
+    role: UserRole.SAFETY_OFFICER,
   },
   {
     name: "Demo Admin",
     email: "admin@opmaint.com",
-    role: "ADMIN",
+    role: UserRole.ADMIN,
   },
 ];
 
@@ -344,8 +344,297 @@ async function main() {
   }
 
   console.log("Ten demo permits seeded successfully!");
+
+// Fetch approval users
+const areaOwner = await prisma.user.findUniqueOrThrow({
+  where: { email: "areaowner@opmaint.com" },
+});
+
+const safetyOfficer = await prisma.user.findUniqueOrThrow({
+  where: { email: "safety@opmaint.com" },
+});
+
+// Fetch Admin user
+const admin = await prisma.user.findUniqueOrThrow({
+  where: { email: "admin@opmaint.com" },
+});
+
+console.log("Demo approvers fetched successfully!");
+console.log("Demo admin fetched successfully!");
+
+
+// Fetch all demo permits
+const seededPermits = await prisma.permit.findMany({
+  where: {
+    permitNumber: {
+      startsWith: "PTW-2026-",
+    },
+  },
+});
+
+console.log(`Fetched ${seededPermits.length} demo permits.`);
+
+
+// Create approval records for each permit
+for (const permit of seededPermits) {
+
+  // Draft permits do not need approval records yet
+  if (permit.status === "DRAFT") {
+    continue;
+  }
+
+  // Set default approval statuses
+  let areaOwnerStatus: "PENDING" | "APPROVED" | "REJECTED" = "APPROVED";
+  let safetyStatus: "PENDING" | "APPROVED" | "REJECTED" = "APPROVED";
+
+  // Both approvers are waiting to review
+  if (permit.status === "PENDING_APPROVAL") {
+    areaOwnerStatus = "PENDING";
+    safetyStatus = "PENDING";
+  }
+
+  // Safety Officer rejects permit 010
+  if (permit.status === "REJECTED") {
+    safetyStatus = "REJECTED";
+  }
+
+  // Create or update Area Owner approval
+  await prisma.approval.upsert({
+    where: {
+      permitId_approverId: {
+        permitId: permit.id,
+        approverId: areaOwner.id,
+      },
+    },
+    update: {
+      status: areaOwnerStatus,
+      comments:
+        areaOwnerStatus === "PENDING"
+          ? "Awaiting review."
+          : "Work scope and plant coordination reviewed.",
+      approvedAt:
+        areaOwnerStatus === "APPROVED"
+          ? new Date(now.getTime() - hour)
+          : null,
+    },
+    create: {
+      permitId: permit.id,
+      approverId: areaOwner.id,
+      status: areaOwnerStatus,
+      comments:
+        areaOwnerStatus === "PENDING"
+          ? "Awaiting review."
+          : "Work scope and plant coordination reviewed.",
+      approvedAt:
+        areaOwnerStatus === "APPROVED"
+          ? new Date(now.getTime() - hour)
+          : null,
+    },
+  });
+
+  // Create or update Safety Officer approval
+  await prisma.approval.upsert({
+    where: {
+      permitId_approverId: {
+        permitId: permit.id,
+        approverId: safetyOfficer.id,
+      },
+    },
+    update: {
+      status: safetyStatus,
+      comments:
+        safetyStatus === "PENDING"
+          ? "Awaiting review."
+          : safetyStatus === "REJECTED"
+            ? "Rejected: required LOTO isolation evidence is missing."
+            : "Safety controls and precautions reviewed.",
+      approvedAt:
+        safetyStatus === "APPROVED"
+          ? new Date(now.getTime() - hour)
+          : null,
+    },
+    create: {
+      permitId: permit.id,
+      approverId: safetyOfficer.id,
+      status: safetyStatus,
+      comments:
+        safetyStatus === "PENDING"
+          ? "Awaiting review."
+          : safetyStatus === "REJECTED"
+            ? "Rejected: required LOTO isolation evidence is missing."
+            : "Safety controls and precautions reviewed.",
+      approvedAt:
+        safetyStatus === "APPROVED"
+          ? new Date(now.getTime() - hour)
+          : null,
+    },
+  });
+
+  console.log(`Approvals created for ${permit.permitNumber}`);
 }
 
+console.log("Demo approval records seeded successfully!");
+
+// Seed audit log records
+console.log("Starting audit log seeding...");
+
+// Remove previous demo audit logs to prevent duplicates
+await prisma.auditLog.deleteMany({
+  where: {
+    permitId: {
+      in: seededPermits.map((permit) => permit.id),
+    },
+  },
+});
+
+const auditLogData = [];
+
+for (const permit of seededPermits) {
+  // Record permit creation
+  auditLogData.push({
+    permitId: permit.id,
+    userId: requester.id,
+    action: "CREATED",
+    oldStatus: null,
+    newStatus: "DRAFT",
+    details: {
+      message: "Permit created by requester.",
+    },
+  });
+
+  if (permit.status === "DRAFT") {
+    continue;
+  }
+
+  // Record permit submission
+  auditLogData.push({
+    permitId: permit.id,
+    userId: requester.id,
+    action: "SUBMITTED",
+    oldStatus: "DRAFT",
+    newStatus: "PENDING_APPROVAL",
+    details: {
+      message: "Permit submitted for approval.",
+    },
+  });
+
+  if (permit.status === "PENDING_APPROVAL") {
+    continue;
+  }
+
+  if (permit.status === "REJECTED") {
+    auditLogData.push({
+      permitId: permit.id,
+      userId: areaOwner.id,
+      action: "AREA_OWNER_APPROVED",
+      oldStatus: "PENDING_APPROVAL",
+      newStatus: "PENDING_APPROVAL",
+      details: {
+        message: "Area Owner approved the permit.",
+      },
+    });
+
+    auditLogData.push({
+      permitId: permit.id,
+      userId: safetyOfficer.id,
+      action: "REJECTED",
+      oldStatus: "PENDING_APPROVAL",
+      newStatus: "REJECTED",
+      details: {
+        message: "Safety Officer rejected the permit due to missing LOTO evidence.",
+      },
+    });
+
+    continue;
+  }
+
+  // Record both approvals
+  auditLogData.push({
+    permitId: permit.id,
+    userId: areaOwner.id,
+    action: "AREA_OWNER_APPROVED",
+    oldStatus: "PENDING_APPROVAL",
+    newStatus: "PENDING_APPROVAL",
+    details: {
+      message: "Area Owner approved the permit.",
+    },
+  });
+
+  auditLogData.push({
+    permitId: permit.id,
+    userId: safetyOfficer.id,
+    action: "SAFETY_OFFICER_APPROVED",
+    oldStatus: "PENDING_APPROVAL",
+    newStatus: "PENDING_APPROVAL",
+    details: {
+      message: "Safety Officer approved the permit.",
+    },
+  });
+
+  if (
+    permit.status === "ACTIVE" ||
+    permit.status === "SUSPENDED" ||
+    permit.status === "CLOSED"
+  ) {
+    auditLogData.push({
+      permitId: permit.id,
+      userId: admin.id,
+      action: "ACTIVATED",
+      oldStatus: "APPROVED",
+      newStatus: "ACTIVE",
+      details: {
+        message: "Admin activated the permit.",
+      },
+    });
+  }
+
+  if (permit.status === "SUSPENDED") {
+    auditLogData.push({
+      permitId: permit.id,
+      userId: admin.id,
+      action: "SUSPENDED",
+      oldStatus: "ACTIVE",
+      newStatus: "SUSPENDED",
+      details: {
+        message: "Admin suspended the permit.",
+      },
+    });
+  }
+
+  if (permit.status === "CLOSED") {
+    auditLogData.push({
+      permitId: permit.id,
+      userId: admin.id,
+      action: "CLOSED",
+      oldStatus: "ACTIVE",
+      newStatus: "CLOSED",
+      details: {
+        message: "Admin closed the permit after work completion.",
+      },
+    });
+  }
+
+  if (permit.status === "APPROVED") {
+    auditLogData.push({
+      permitId: permit.id,
+      userId: admin.id,
+      action: "APPROVED",
+      oldStatus: "PENDING_APPROVAL",
+      newStatus: "APPROVED",
+      details: {
+        message: "All required approvals completed.",
+      },
+    });
+  }
+}
+
+// Insert audit log records
+await prisma.auditLog.createMany({
+  data: auditLogData,
+});
+
+console.log(`${auditLogData.length} audit log records seeded successfully!`);
+}
 main()
   .catch((error) => {
     console.error("Seed failed:", error);
